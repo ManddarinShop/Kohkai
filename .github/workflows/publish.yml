@@ -1,0 +1,147 @@
+name: Publish Kohkai
+
+# A reviewed package version is published by pushing a matching tag such as
+# v0.1.0. Kohkai does not auto-bump versions from another repository's branch.
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+concurrency:
+  group: kohkai-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify Kohkai package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate tag matches package version
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$TAG_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            expected_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          else
+            echo "Kohkai release tag must be vX.Y.Z: $TAG_NAME" >&2
+            exit 1
+          fi
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          test "$package_name" = "@hikoutei/kohkai"
+          test "$package_version" = "$expected_version"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and test
+        run: |
+          npm run typecheck
+          npm run typecheck:test
+          npm test
+
+      - name: Build package
+        run: npm run build
+
+      - name: Pack and verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/kohkai-package"
+          rm -rf "$package_dir"
+          mkdir -p "$package_dir"
+          package_file="$(npm pack --silent --pack-destination "$package_dir")"
+          package_path="$package_dir/$package_file"
+          test -f "$package_path"
+          tar -xOf "$package_path" package/package.json > "$RUNNER_TEMP/kohkai-package.json"
+          node -e '
+            const pkg = require(process.argv[1]);
+            if (pkg.name !== "@hikoutei/kohkai" || !/^\d+\.\d+\.\d+$/.test(pkg.version)) process.exit(1);
+          ' "$RUNNER_TEMP/kohkai-package.json"
+          tar -tzf "$package_path" | grep -q '^package/dist/index.js$'
+          tar -tzf "$package_path" | grep -q '^package/dist/index.d.ts$'
+          tar -tzf "$package_path" | grep -q '^package/README.md$'
+          tar -tzf "$package_path" | grep -q '^package/LICENSE$'
+          if tar -tzf "$package_path" | grep -qE '^package/(src|test|apps-script)/'; then
+            echo "Kohkai package contains unpublished source, tests, or Apps Script files" >&2
+            exit 1
+          fi
+          (cd "$package_dir" && sha256sum "$package_file" > kohkai-package.sha256)
+
+      - name: Upload Kohkai package
+        uses: actions/upload-artifact@v5
+        with:
+          name: kohkai-package
+          path: ${{ runner.temp }}/kohkai-package
+          if-no-files-found: error
+
+  publish:
+    name: Publish @hikoutei/kohkai
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Download Kohkai package
+        uses: actions/download-artifact@v5
+        with:
+          name: kohkai-package
+          path: ${{ runner.temp }}/kohkai-package
+
+      - name: Publish Kohkai package
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "NPM_TOKEN secret is required to publish @hikoutei/kohkai." >&2
+            exit 1
+          fi
+          if [[ "$TAG_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            expected_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          else
+            echo "Kohkai release tag must be vX.Y.Z: $TAG_NAME" >&2
+            exit 1
+          fi
+          package_dir="$RUNNER_TEMP/kohkai-package"
+          mapfile -t packages < <(find "$package_dir" -maxdepth 1 -name 'hikoutei-kohkai-*.tgz' -type f -print)
+          if [[ "${#packages[@]}" -ne 1 ]]; then
+            echo "expected exactly one Kohkai package, found ${#packages[@]}" >&2
+            exit 1
+          fi
+          package_file="${packages[0]}"
+          (cd "$package_dir" && sha256sum --check kohkai-package.sha256)
+          tar -xOf "$package_file" package/package.json > "$RUNNER_TEMP/kohkai-package.json"
+          node -e '
+            const pkg = require(process.argv[1]);
+            if (pkg.name !== "@hikoutei/kohkai" || pkg.version !== process.argv[2]) process.exit(1);
+          ' "$RUNNER_TEMP/kohkai-package.json" "$expected_version"
+          npm publish "$package_file" --access public --provenance

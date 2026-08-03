@@ -1,0 +1,45 @@
+{
+  "name": "@hikoutei/kohkai",
+  "version": "0.1.0",
+  "description": "Runtime-neutral stable encoding and canonical JSON primitives for cross-runtime signed payloads.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "smoke:packed-consumer": "node scripts/packed-consumer-smoke.mjs",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ManddarinShop/Kohkai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ManddarinShop/Kohkai/issues"
+  },
+  "homepage": "https://github.com/ManddarinShop/Kohkai#readme",
+  "license": "MIT",
+  "author": "ManddarinShop",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "typescript": "^5.5.3",
+    "vitest": "^1.6.0"
+  }
+}
